@@ -1,0 +1,14 @@
+black blight
+blister blight
+brown blight
+genes
+grey blight
+healthy
+lichen
+magnesium
+mita
+nitrogen
+potassium
+redrust
+sulfur
+sunburn

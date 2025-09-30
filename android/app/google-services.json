@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "84109868679",
+    "project_id": "teahealth-6d55b",
+    "storage_bucket": "teahealth-6d55b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:84109868679:android:89e207a51b561159978222",
+        "android_client_info": {
+          "package_name": "com.example.teascan_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDpG04-zKXNF0u3nyp28C7brpTFYpr3atE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
