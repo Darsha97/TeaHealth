@@ -1296,6 +1296,8 @@ import 'results_page.dart';   // DetectionResult + ResultPage
 import 'rederpage.dart';     // renderDetectionsOnImage(...)
 import 'history_page.dart';
 import 'history_service.dart';
+import 'live_detect_page.dart';
+
 
 /// Native channel for your PyTorch "is tea?" classifier
 const MethodChannel pytorchChannel = MethodChannel('pytorch_channel');
@@ -1596,6 +1598,30 @@ class _HomePageState extends ConsumerState<HomePage> {
               );
             },
           ),
+          ListTile(
+  leading: const Icon(Icons.camera),
+  title: const Text('Live Camera (Real-Time)'),
+  onTap: () {
+    Navigator.pop(ctx);
+    _yoloInit.then((ok) {
+      if (!mounted) return;
+      if (ok) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => LiveDetectPage(vision: vision, title: 'Live Detection'),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Model failed to load. Please retry.')),
+        );
+      }
+    });
+  },
+),
+
+
         ],
       ),
     );

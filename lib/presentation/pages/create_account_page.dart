@@ -375,7 +375,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'auth_service.dart';
+import '../../core/auth/auth_service.dart';
 import 'login_page.dart';
 
 class CreateAccountPage extends ConsumerStatefulWidget {

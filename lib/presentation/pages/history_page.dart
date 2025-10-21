@@ -291,8 +291,7 @@
 
 
 
- 
-// history_page.dart
+
 import 'dart:convert';
 import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -301,6 +300,7 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'history_service.dart';
+import 'map_history_page.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -311,6 +311,45 @@ class HistoryPage extends StatefulWidget {
 class _HistoryPageState extends State<HistoryPage> {
   // track which cards are expanded
   final Set<String> _expanded = {};
+  final _svc = HistoryService();
+
+  Future<void> _deleteScan(HistoryItem it) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete scan?'),
+        content: const Text('This will permanently remove the scan from your history.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      await _svc.deleteScan(uid: user.uid, id: it.id);
+      _expanded.remove(it.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Scan deleted')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Delete failed: $e')),
+        );
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -321,6 +360,9 @@ class _HistoryPageState extends State<HistoryPage> {
       );
     }
     final svc = HistoryService();
+  
+
+    
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -331,6 +373,21 @@ class _HistoryPageState extends State<HistoryPage> {
         title: const Text('History',
             style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
         iconTheme: const IconThemeData(color: Colors.white),
+         
+    actions: [
+      IconButton(
+        tooltip: 'Open map',
+        icon: const Icon(Icons.map, color: Colors.white),
+        onPressed: () {
+          final uid = FirebaseAuth.instance.currentUser!.uid;
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => MapHistoryPage(uid: uid)),
+          );
+        },
+      ),
+      const SizedBox(width: 4),
+    ],
       ),
       body: Stack(
         children: [
@@ -362,6 +419,10 @@ class _HistoryPageState extends State<HistoryPage> {
                     ),
                   );
                 }
+
+                // inside HistoryPage build():
+ 
+
 
                 final items = (snap.data ?? const []);
                 if (items.isEmpty) return const _EmptyState();
@@ -399,6 +460,7 @@ class _HistoryPageState extends State<HistoryPage> {
                                 });
                               },
                               onOpen: () => _openDetail(context, it),
+                              onDelete: () => _deleteScan(it), 
                             ),
                           );
                         }),
@@ -470,6 +532,8 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   static String _two(int n) => n.toString().padLeft(2, '0');
+
+  
 }
 
 class _DateHeader extends StatelessWidget {
@@ -552,12 +616,14 @@ class _HistoryCard extends StatelessWidget {
     required this.expanded,
     required this.onToggle,
     required this.onOpen,
+    required this.onDelete, 
   });
 
   final HistoryItem it;
   final bool expanded;
   final VoidCallback onToggle;
   final VoidCallback onOpen;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -637,6 +703,16 @@ class _HistoryCard extends StatelessWidget {
                   _HistoryPageState._formatWhen(it.createdAt),
                   style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
                 ),
+                PopupMenuButton<String>(
+        padding: EdgeInsets.zero,
+        icon: const Icon(Icons.delete, size: 20),
+        onSelected: (v) {
+          if (v == 'delete') onDelete();
+        },
+        itemBuilder: (_) => const [
+          PopupMenuItem(value: 'delete', child: Text('Delete')),
+        ],
+      ),
               ],
             ),
           ),
