@@ -67,19 +67,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'app.dart';
-import 'presentation/pages/splash_screen.dart';
+import 'firebase_options.dart';
+ 
  
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // Initialize Firebase using platform defaults; do not reference DefaultFirebaseOptions.
-  await Firebase.initializeApp(
-    options: const FirebaseOptions(
-    apiKey: "AIzaSyDpG04-zKXNF0u3nyp28C7brpTFYpr3atE",
-    appId: "1:84109868679:android:89e207a51b561159978222",
-    messagingSenderId: "84109868679",
-    projectId: "teahealth-6d55b",
-    storageBucket: "teahealth-6d55b.appspot.com",
-  ),
+ await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+
   );
   runApp(const ProviderScope(child: TeaScanAppp()));
 }

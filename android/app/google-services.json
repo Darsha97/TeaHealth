@@ -12,7 +12,20 @@
           "package_name": "com.example.teascan_app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "84109868679-t6qqop4pmpghgouhv1sajuahhsjai264.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.teascan_app",
+            "certificate_hash": "53b6bd1bcbc696bc14df0fc8a19f7d18c72a5655"
+          }
+        },
+        {
+          "client_id": "84109868679-7li55kht69m2c51pl9ecjt648qdlsj05.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyDpG04-zKXNF0u3nyp28C7brpTFYpr3atE"
@@ -20,7 +33,19 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "84109868679-7li55kht69m2c51pl9ecjt648qdlsj05.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "84109868679-bohamac1kjjqiehshcan60nulm2s1orv.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.teascanApp"
+              }
+            }
+          ]
         }
       }
     }

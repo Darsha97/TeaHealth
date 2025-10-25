@@ -81,7 +81,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 
 /// TODO: Replace with your real web client id from Firebase Console >
 /// Project settings > General > Your web app > OAuth 2.0 Client IDs
-const _kWebClientId = 'YOUR_WEB_CLIENT_ID.apps.googleusercontent.com';
+const _kWebClientId = '84109868679-7li55kht69m2c51pl9ecjt648qdlsj05.apps.googleusercontent.com';
 
 final authServiceProvider = Provider<AuthService>((ref) {
   return AuthService(
@@ -116,28 +116,28 @@ class AuthService {
 
   /// Google sign-in that always provides an idToken/accessToken pair.
   Future<UserCredential?> signInWithGoogle() async {
-    // Optional: clear any stale session
-    // await _googleSignIn.signOut();
-
-    final googleUser = await _googleSignIn.signIn();
-    if (googleUser == null) return null; // user cancelled
-
-    final googleAuth = await googleUser.authentication;
-
-    if (googleAuth.idToken == null && googleAuth.accessToken == null) {
-      throw FirebaseAuthException(
-        code: 'missing-google-token',
-        message:
-            'Google returned no idToken/accessToken. Check clientId & SHA keys.',
-      );
-    }
-
-    final credential = GoogleAuthProvider.credential(
-      idToken: googleAuth.idToken,
-      accessToken: googleAuth.accessToken,
-    );
-    return _auth.signInWithCredential(credential);
+  final googleUser = await _googleSignIn.signIn();
+  if (googleUser == null) {
+    print('[GOOGLE] cancelled');
+    return null;
   }
+
+  final googleAuth = await googleUser.authentication;
+  print('[GOOGLE] idToken? ${googleAuth.idToken != null} accessToken? ${googleAuth.accessToken != null}');
+
+  if (googleAuth.idToken == null && googleAuth.accessToken == null) {
+    throw FirebaseAuthException(
+      code: 'missing-google-token',
+      message: 'No tokens from Google. Check Web client ID + SHA + google-services.json.',
+    );
+  }
+
+  final cred = GoogleAuthProvider.credential(
+    idToken: googleAuth.idToken,
+    accessToken: googleAuth.accessToken,
+  );
+  return await FirebaseAuth.instance.signInWithCredential(cred);
+}
 
   Future<void> sendPasswordResetEmail(
     String email, {

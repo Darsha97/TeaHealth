@@ -81,7 +81,7 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   try {
     // Optional deep-link back to app (you can omit actionCodeSettings)
     final acs = ActionCodeSettings(
-      url: 'https://YOUR_PROJECT.firebaseapp.com/reset',
+      url: 'https://teahealth-6d55b.web.app/reset',
       androidPackageName: 'com.example.teascan_app',
       androidInstallApp: false,
       handleCodeInApp: true,
