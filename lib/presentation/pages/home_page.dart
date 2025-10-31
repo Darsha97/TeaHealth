@@ -14,8 +14,8 @@ import 'package:video_thumbnail/video_thumbnail.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'location_service.dart';
-import 'login_page.dart';
-import 'create_account_page.dart';
+import 'auth/login_page.dart';
+import 'auth/create_account_page.dart';
 import 'profile_page.dart';
 import 'results_page.dart';   // DetectionResult + ResultPage
 import 'rederpage.dart';     // renderDetectionsOnImage(...)

@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'presentation/pages/splash_screen.dart';
-import 'presentation/pages/login_page.dart';
+import 'presentation/pages/auth/login_page.dart';
 import 'presentation/pages/home_page.dart';
 
 class TeaScanAppp extends StatelessWidget {
