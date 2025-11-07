@@ -300,7 +300,10 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'history_service.dart';
+import '../../core/localization/app_localizations.dart';
+import 'home_page.dart';
 import 'map_history_page.dart';
+import 'profile_page.dart';
 
 class HistoryPage extends StatefulWidget {
   const HistoryPage({super.key});
@@ -312,6 +315,103 @@ class _HistoryPageState extends State<HistoryPage> {
   // track which cards are expanded
   final Set<String> _expanded = {};
   final _svc = HistoryService();
+  
+  // Date search state
+  DateTime? _startDate;
+  DateTime? _endDate;
+  bool _isSearchActive = false;
+
+  Future<void> _pickStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null) {
+      setState(() {
+        _startDate = DateTime(picked.year, picked.month, picked.day);
+        _isSearchActive = true;
+        // If end date is before start date, clear it
+        if (_endDate != null && _endDate!.isBefore(_startDate!)) {
+          _endDate = null;
+        }
+      });
+    }
+  }
+
+  Future<void> _pickEndDate() async {
+    final initialDate = _endDate ?? _startDate ?? DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: _startDate ?? DateTime(2020),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null) {
+      setState(() {
+        _endDate = DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
+        _isSearchActive = true;
+      });
+    }
+  }
+
+  Future<void> _pickSingleDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate ?? DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now(),
+    );
+    if (picked != null) {
+      setState(() {
+        final selectedDate = DateTime(picked.year, picked.month, picked.day);
+        _startDate = selectedDate;
+        _endDate = DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
+        _isSearchActive = true;
+      });
+    }
+  }
+
+  void _clearSearch() {
+    setState(() {
+      _startDate = null;
+      _endDate = null;
+      _isSearchActive = false;
+    });
+  }
+
+  List<HistoryItem> _filterByDate(List<HistoryItem> items) {
+    if (!_isSearchActive || (_startDate == null && _endDate == null)) {
+      return items;
+    }
+
+    return items.where((item) {
+      final itemDate = DateTime(
+        item.createdAt.year,
+        item.createdAt.month,
+        item.createdAt.day,
+      );
+      
+      if (_startDate != null && _endDate != null) {
+        // Date range search
+        final start = DateTime(_startDate!.year, _startDate!.month, _startDate!.day);
+        final end = DateTime(_endDate!.year, _endDate!.month, _endDate!.day);
+        // Check if item date is within range (inclusive)
+        return (itemDate.isAtSameMomentAs(start) || itemDate.isAfter(start)) &&
+               (itemDate.isAtSameMomentAs(end) || itemDate.isBefore(end));
+      } else if (_startDate != null) {
+        // Single date or start date only
+        final start = DateTime(_startDate!.year, _startDate!.month, _startDate!.day);
+        return itemDate.isAtSameMomentAs(start);
+      } else if (_endDate != null) {
+        // End date only - show all items up to and including end date
+        final end = DateTime(_endDate!.year, _endDate!.month, _endDate!.day);
+        return itemDate.isAtSameMomentAs(end) || itemDate.isBefore(end);
+      }
+      return true;
+    }).toList();
+  }
 
   Future<void> _deleteScan(HistoryItem it) async {
     final user = FirebaseAuth.instance.currentUser;
@@ -320,13 +420,36 @@ class _HistoryPageState extends State<HistoryPage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Delete scan?'),
-        content: const Text('This will permanently remove the scan from your history.'),
+        title: Builder(
+          builder: (context) {
+            final localizations = AppLocalizations.of(context);
+            return Text(localizations?.deleteScan ?? 'Delete scan?');
+          },
+        ),
+        content: Builder(
+          builder: (context) {
+            final localizations = AppLocalizations.of(context);
+            return Text(localizations?.permanentlyRemoveScan ?? 'This will permanently remove the scan from your history.');
+          },
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete'),
+          Builder(
+            builder: (context) {
+              final localizations = AppLocalizations.of(context);
+              return TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: Text(localizations?.cancel ?? 'Cancel'),
+              );
+            },
+          ),
+          Builder(
+            builder: (context) {
+              final localizations = AppLocalizations.of(context);
+              return FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: Text(localizations?.delete ?? 'Delete'),
+              );
+            },
           ),
         ],
       ),
@@ -338,14 +461,16 @@ class _HistoryPageState extends State<HistoryPage> {
       await _svc.deleteScan(uid: user.uid, id: it.id);
       _expanded.remove(it.id);
       if (mounted) {
+        final localizations = AppLocalizations.of(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Scan deleted')),
+          SnackBar(content: Text(localizations?.scanDeleted ?? 'Scan deleted')),
         );
       }
     } catch (e) {
       if (mounted) {
+        final localizations = AppLocalizations.of(context);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Delete failed: $e')),
+          SnackBar(content: Text('${localizations?.deleteFailed ?? 'Delete failed'}: $e')),
         );
       }
     }
@@ -355,8 +480,13 @@ class _HistoryPageState extends State<HistoryPage> {
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      return const Scaffold(
-        body: Center(child: Text('Please log in to see your scan history')),
+      return Builder(
+        builder: (context) {
+          final localizations = AppLocalizations.of(context);
+          return Scaffold(
+            body: Center(child: Text(localizations?.pleaseLoginToSeeHistory ?? 'Please log in to see your scan history')),
+          );
+        },
       );
     }
     final svc = HistoryService();
@@ -370,24 +500,28 @@ class _HistoryPageState extends State<HistoryPage> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         centerTitle: true,
-        title: const Text('History',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+        title: Builder(
+          builder: (context) {
+            final localizations = AppLocalizations.of(context);
+            return Text(
+              localizations?.history ?? 'History',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w800,
+                fontSize: 22,
+                letterSpacing: 0.5,
+                shadows: [
+                  Shadow(
+                    color: Colors.black26,
+                    offset: Offset(0, 1),
+                    blurRadius: 2,
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
         iconTheme: const IconThemeData(color: Colors.white),
-         
-    actions: [
-      IconButton(
-        tooltip: 'Open map',
-        icon: const Icon(Icons.map, color: Colors.white),
-        onPressed: () {
-          final uid = FirebaseAuth.instance.currentUser!.uid;
-          Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => MapHistoryPage(uid: uid)),
-          );
-        },
-      ),
-      const SizedBox(width: 4),
-    ],
       ),
       body: Stack(
         children: [
@@ -411,9 +545,10 @@ class _HistoryPageState extends State<HistoryPage> {
                   return const Center(child: CircularProgressIndicator(color: Colors.white));
                 }
                 if (snap.hasError) {
+                  final localizations = AppLocalizations.of(context);
                   return Center(
                     child: Text(
-                      'Failed to load history:\n${snap.error}',
+                      '${localizations?.failedToLoadHistory ?? 'Failed to load history'}:\n${snap.error}',
                       textAlign: TextAlign.center,
                       style: const TextStyle(color: Colors.white),
                     ),
@@ -425,23 +560,51 @@ class _HistoryPageState extends State<HistoryPage> {
 
 
                 final items = (snap.data ?? const []);
-                if (items.isEmpty) return const _EmptyState();
+                final filteredItems = _filterByDate(items);
+                
+                if (filteredItems.isEmpty) {
+                  if (_isSearchActive) {
+                    return _EmptySearchState(
+                      onClear: _clearSearch,
+                      onPickStart: _pickStartDate,
+                      onPickEnd: _pickEndDate,
+                      onPickSingle: _pickSingleDate,
+                      startDate: _startDate,
+                      endDate: _endDate,
+                    );
+                  }
+                  return const _EmptyState();
+                }
 
                 // Group by local date (yyyy-mm-dd)
-                final groups = _groupByDate(items);
+                final groups = _groupByDate(filteredItems);
                 final dates = groups.keys.toList()..sort((a, b) => b.compareTo(a));
 
-                return ListView.builder(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
-                  itemCount: dates.length,
+                return Column(
+                  children: [
+                    // Search bar
+                    _DateSearchBar(
+                      startDate: _startDate,
+                      endDate: _endDate,
+                      isActive: _isSearchActive,
+                      onPickStart: _pickStartDate,
+                      onPickEnd: _pickEndDate,
+                      onPickSingle: _pickSingleDate,
+                      onClear: _clearSearch,
+                    ),
+                    // History list
+                    Expanded(
+                      child: ListView.builder(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                        itemCount: dates.length,
                   itemBuilder: (context, gi) {
                     final dateKey = dates[gi];
                     final list = groups[dateKey]!;
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        _DateHeader(text: _prettyDate(dateKey)),
-                        const SizedBox(height: 8),
+                        _DateHeader(text: _prettyDate(dateKey, context)),
+                        const SizedBox(height: 6),
                         ...List.generate(list.length, (i) {
                           final it = list[i];
                           final expanded = _expanded.contains(it.id);
@@ -468,11 +631,65 @@ class _HistoryPageState extends State<HistoryPage> {
                       ],
                     );
                   },
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
           ),
         ],
+      ),
+      bottomNavigationBar: Builder(
+        builder: (context) {
+          final localizations = AppLocalizations.of(context);
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: BottomNavigationBar(
+                backgroundColor: Colors.white,
+                elevation: 12,
+                selectedItemColor: Colors.green,
+                unselectedItemColor: Colors.black54,
+                type: BottomNavigationBarType.fixed,
+                currentIndex: 1,
+                items: [
+                  BottomNavigationBarItem(icon: const Icon(Icons.home), label: localizations?.home ?? 'Home'),
+                  BottomNavigationBarItem(icon: const Icon(Icons.history), label: localizations?.history ?? 'History'),
+                  BottomNavigationBarItem(icon: const Icon(Icons.map), label: localizations?.map ?? 'Map'),
+                  BottomNavigationBarItem(icon: const Icon(Icons.person), label: localizations?.profile ?? 'Profile'),
+                ],
+            onTap: (index) {
+              final user = FirebaseAuth.instance.currentUser;
+              if (index == 0) {
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(builder: (_) => const HomePage()),
+                );
+              } else if (index == 2) {
+                if (user != null) {
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(builder: (_) => MapHistoryPage(uid: user.uid)),
+                  );
+                } else {
+                  final localizations = AppLocalizations.of(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(localizations?.pleaseLoginToViewMap ?? 'Please log in to view map')),
+                  );
+                }
+              } else if (index == 3) {
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProfilePage()),
+                );
+              }
+            },
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -507,27 +724,38 @@ class _HistoryPageState extends State<HistoryPage> {
     return map;
   }
 
-  static String _prettyDate(String yyyyMmDd) {
+  static String _prettyDate(String yyyyMmDd, BuildContext? context) {
     final parts = yyyyMmDd.split('-');
     final d = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final yday = today.subtract(const Duration(days: 1));
     final dd = DateTime(d.year, d.month, d.day);
-    if (dd == today) return 'Today';
-    if (dd == yday) return 'Yesterday';
-    return '${_month(dd.month)} ${dd.day}, ${dd.year}';
+    final localizations = context != null ? AppLocalizations.of(context) : null;
+    if (dd == today) return localizations?.today ?? 'Today';
+    if (dd == yday) return localizations?.yesterday ?? 'Yesterday';
+    return '${_month(dd.month, localizations)} ${dd.day}, ${dd.year}';
   }
 
-  static String _month(int m) =>
-      ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1];
+  static String _month(int m, AppLocalizations? localizations) {
+    if (localizations == null) {
+      return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1];
+    }
+    final months = [
+      localizations.jan, localizations.feb, localizations.mar, localizations.apr,
+      localizations.may, localizations.jun, localizations.jul, localizations.aug,
+      localizations.sep, localizations.oct, localizations.nov, localizations.dec
+    ];
+    return months[m-1];
+  }
 
-  static String _formatWhen(DateTime dt) {
+  static String _formatWhen(DateTime dt, BuildContext? context) {
     final now = DateTime.now();
     final diff = now.difference(dt);
-    if (diff.inMinutes < 1) return 'just now';
-    if (diff.inHours < 1) return '${diff.inMinutes} min ago';
-    if (diff.inDays < 1) return '${diff.inHours} hr ago';
+    final localizations = context != null ? AppLocalizations.of(context) : null;
+    if (diff.inMinutes < 1) return localizations?.justNow ?? 'just now';
+    if (diff.inHours < 1) return '${diff.inMinutes} ${localizations?.minAgo ?? 'min ago'}';
+    if (diff.inDays < 1) return '${diff.inHours} ${localizations?.hrAgo ?? 'hr ago'}';
     return '${dt.year}-${_two(dt.month)}-${_two(dt.day)} ${_two(dt.hour)}:${_two(dt.minute)}';
   }
 
@@ -542,15 +770,35 @@ class _DateHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(top: 6, bottom: 2),
-      child: Text(
-        text,
-        style: const TextStyle(
-          color: Colors.white,
-          fontWeight: FontWeight.w800,
-          fontSize: 16,
-          letterSpacing: 0.3,
-        ),
+      padding: const EdgeInsets.only(top: 8, bottom: 4),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 20,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.8),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 17,
+              letterSpacing: 0.5,
+              shadows: [
+                Shadow(
+                  color: Colors.black26,
+                  offset: Offset(0, 1),
+                  blurRadius: 2,
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -586,22 +834,442 @@ class _EmptyState extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: Card(
-        color: Colors.white.withOpacity(0.12),
-        shadowColor: Colors.black26,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        child: const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Card(
+          elevation: 8,
+          shadowColor: Colors.black.withOpacity(0.2),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          child: Container(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(24),
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Colors.white.withOpacity(0.95),
+                  Colors.white.withOpacity(0.85),
+                ],
+              ),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    Icons.history_toggle_off,
+                    size: 60,
+                    color: Colors.green.shade400,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Builder(
+                  builder: (context) {
+                    final localizations = AppLocalizations.of(context);
+                    return Text(
+                      localizations?.noScansYet ?? 'No scans yet',
+                      style: const TextStyle(
+                        color: Colors.black87,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 22,
+                        letterSpacing: 0.5,
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                Builder(
+                  builder: (context) {
+                    final localizations = AppLocalizations.of(context);
+                    return Text(
+                      localizations?.scanTeaLeafToSeeResults ?? 'Scan a tea leaf to see results here.',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      textAlign: TextAlign.center,
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptySearchState extends StatelessWidget {
+  const _EmptySearchState({
+    required this.onClear,
+    required this.onPickStart,
+    required this.onPickEnd,
+    required this.onPickSingle,
+    this.startDate,
+    this.endDate,
+  });
+
+  final VoidCallback onClear;
+  final VoidCallback onPickStart;
+  final VoidCallback onPickEnd;
+  final VoidCallback onPickSingle;
+  final DateTime? startDate;
+  final DateTime? endDate;
+
+  String _formatDate(DateTime? date, BuildContext? context) {
+    if (date == null) return '';
+    final localizations = context != null ? AppLocalizations.of(context) : null;
+    return '${_month(date.month, localizations)} ${date.day}, ${date.year}';
+  }
+
+  String _month(int m, AppLocalizations? localizations) {
+    if (localizations == null) {
+      return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1];
+    }
+    final months = [
+      localizations.jan, localizations.feb, localizations.mar, localizations.apr,
+      localizations.may, localizations.jun, localizations.jul, localizations.aug,
+      localizations.sep, localizations.oct, localizations.nov, localizations.dec
+    ];
+    return months[m-1];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    String dateRangeText = '';
+    if (startDate != null && endDate != null) {
+      if (startDate!.year == endDate!.year &&
+          startDate!.month == endDate!.month &&
+          startDate!.day == endDate!.day) {
+        dateRangeText = _formatDate(startDate, context);
+      } else {
+        dateRangeText = '${_formatDate(startDate, context)} - ${_formatDate(endDate, context)}';
+      }
+    } else if (startDate != null) {
+      final localizations = AppLocalizations.of(context);
+      dateRangeText = '${localizations?.from ?? 'From'} ${_formatDate(startDate, context)}';
+    } else if (endDate != null) {
+      final localizations = AppLocalizations.of(context);
+      dateRangeText = '${localizations?.until ?? 'Until'} ${_formatDate(endDate, context)}';
+    }
+
+    return Column(
+      children: [
+        _DateSearchBar(
+          startDate: startDate,
+          endDate: endDate,
+          isActive: true,
+          onPickStart: onPickStart,
+          onPickEnd: onPickEnd,
+          onPickSingle: onPickSingle,
+          onClear: onClear,
+        ),
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Card(
+                elevation: 8,
+                shadowColor: Colors.black.withOpacity(0.2),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(24),
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        Colors.white.withOpacity(0.95),
+                        Colors.white.withOpacity(0.85),
+                      ],
+                    ),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.search_off,
+                          size: 60,
+                          color: Colors.orange.shade400,
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+                      Builder(
+                        builder: (context) {
+                          final localizations = AppLocalizations.of(context);
+                          return Text(
+                            localizations?.noScansFound ?? 'No scans found',
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 22,
+                              letterSpacing: 0.5,
+                            ),
+                          );
+                        },
+                      ),
+                      if (dateRangeText.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.shade50,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            'Date: $dateRangeText',
+                            style: TextStyle(
+                              color: Colors.blue.shade900,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 24),
+                      Builder(
+                        builder: (context) {
+                          final localizations = AppLocalizations.of(context);
+                          return ElevatedButton.icon(
+                            onPressed: onClear,
+                            icon: const Icon(Icons.clear, size: 18),
+                            label: Text(localizations?.clearSearch ?? 'Clear search'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.grey.shade800,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DateSearchBar extends StatelessWidget {
+  const _DateSearchBar({
+    required this.startDate,
+    required this.endDate,
+    required this.isActive,
+    required this.onPickStart,
+    required this.onPickEnd,
+    required this.onPickSingle,
+    required this.onClear,
+  });
+
+  final DateTime? startDate;
+  final DateTime? endDate;
+  final bool isActive;
+  final VoidCallback onPickStart;
+  final VoidCallback onPickEnd;
+  final VoidCallback onPickSingle;
+  final VoidCallback onClear;
+
+  String _formatDate(DateTime? date, BuildContext? context) {
+    final localizations = context != null ? AppLocalizations.of(context) : null;
+    if (date == null) return localizations?.select ?? 'Select';
+    return '${_month(date.month, localizations)} ${date.day}, ${date.year}';
+  }
+
+  String _month(int m, AppLocalizations? localizations) {
+    if (localizations == null) {
+      return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1];
+    }
+    final months = [
+      localizations.jan, localizations.feb, localizations.mar, localizations.apr,
+      localizations.may, localizations.jun, localizations.jul, localizations.aug,
+      localizations.sep, localizations.oct, localizations.nov, localizations.dec
+    ];
+    return months[m-1];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.4), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.25),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.calendar_today, color: Colors.white, size: 18),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Builder(
+                  builder: (context) {
+                    final localizations = AppLocalizations.of(context);
+                    return Text(
+                      localizations?.searchByDate ?? 'Search by Date',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3,
+                      ),
+                    );
+                  },
+                ),
+              ),
+              if (isActive)
+                InkWell(
+                  onTap: onClear,
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.close, color: Colors.white, size: 18),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              // Single date button
+              Expanded(
+                child: _DateButton(
+                  icon: Icons.event,
+                  label: startDate != null && endDate != null &&
+                      startDate!.year == endDate!.year &&
+                      startDate!.month == endDate!.month &&
+                      startDate!.day == endDate!.day
+                      ? _formatDate(startDate, context)
+                      : (AppLocalizations.of(context)?.date ?? 'Date'),
+                  onPressed: onPickSingle,
+                  isActive: startDate != null && endDate != null &&
+                      startDate!.year == endDate!.year &&
+                      startDate!.month == endDate!.month &&
+                      startDate!.day == endDate!.day,
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Start date button
+              Expanded(
+                child: _DateButton(
+                  icon: Icons.arrow_forward,
+                  label: _formatDate(startDate, context),
+                  onPressed: onPickStart,
+                  isActive: startDate != null,
+                ),
+              ),
+              const SizedBox(width: 8),
+              // End date button
+              Expanded(
+                child: _DateButton(
+                  icon: Icons.arrow_back,
+                  label: _formatDate(endDate, context),
+                  onPressed: onPickEnd,
+                  isActive: endDate != null,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DateButton extends StatelessWidget {
+  const _DateButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.isActive = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          decoration: BoxDecoration(
+            color: isActive
+                ? Colors.white.withOpacity(0.3)
+                : Colors.white.withOpacity(0.15),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isActive
+                  ? Colors.white.withOpacity(0.6)
+                  : Colors.white.withOpacity(0.3),
+              width: isActive ? 1.5 : 1,
+            ),
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.history_toggle_off, size: 50, color: Colors.white),
-              SizedBox(height: 10),
-              Text('No scans yet',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 18)),
-              SizedBox(height: 6),
-              Text('Scan a tea leaf to see results here.',
-                  style: TextStyle(color: Colors.white70), textAlign: TextAlign.center),
+              Icon(icon, color: Colors.white, size: 16),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: isActive ? FontWeight.w700 : FontWeight.w500,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ],
           ),
         ),
@@ -632,143 +1300,275 @@ class _HistoryCard extends StatelessWidget {
     final color = healthy ? Colors.green : Colors.redAccent;
 
     return Card(
-      elevation: 8,
-      shadowColor: Colors.black26,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      elevation: 4,
+      shadowColor: Colors.black.withOpacity(0.15),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          
-          GestureDetector(
-            onTap: onOpen,
-            child: AspectRatio(
-              aspectRatio: 16 / 2,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  Hero(
-                    tag: 'scan_${it.id}',
-                    child: it.imageB64.isNotEmpty
-                        ? Image.memory(
-                            base64Decode(it.imageB64),
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) =>
-                                const Center(child: Icon(Icons.broken_image, size: 48)),
-                          )
-                        : const Center(child: Icon(Icons.broken_image, size: 48)),
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Colors.white,
+              Colors.grey.shade50,
+            ],
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Image section
+            GestureDetector(
+              onTap: onOpen,
+              child: AspectRatio(
+                aspectRatio: 3 / 1,
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(20),
+                    topRight: Radius.circular(20),
                   ),
-                  // Top-right confidence chip
-                  if (pct != null)
-                    Positioned(
-                      top: 5,
-                      right: 5,
-                      child: _FrostedChip(
-                        child: Row(
-                          children: [
-                            const Icon(Icons.speed_rounded, size: 14, color: Colors.white),
-                            const SizedBox(width: 4),
-                            Text('$pct%',
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                  child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Hero(
+                      tag: 'scan_${it.id}',
+                      child: it.imageB64.isNotEmpty
+                          ? Image.memory(
+                              base64Decode(it.imageB64),
+                              fit: BoxFit.cover,
+                              errorBuilder: (_, __, ___) =>
+                                  Container(
+                                    color: Colors.grey.shade200,
+                                    child: const Center(child: Icon(Icons.broken_image, size: 48, color: Colors.grey)),
+                                  ),
+                            )
+                          : Container(
+                              color: Colors.grey.shade200,
+                              child: const Center(child: Icon(Icons.broken_image, size: 48, color: Colors.grey)),
+                            ),
+                    ),
+                    // Gradient overlay
+                    Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [
+                            Colors.transparent,
+                            Colors.black.withOpacity(0.3),
                           ],
                         ),
                       ),
                     ),
-                ],
-              ),
-            ),
-          ),
-
-          // Title row + time (always visible)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 16,
-                  backgroundColor: color.withOpacity(0.12),
-                  child: Icon(healthy ? Icons.eco : Icons.warning_amber_rounded, color: color, size: 18),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    it.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                    // Top-right confidence chip
+                    if (pct != null)
+                      Positioned(
+                        top: 10,
+                        right: 10,
+                        child: _FrostedChip(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.speed_rounded, size: 16, color: Colors.white),
+                              const SizedBox(width: 4),
+                              Text(
+                                '$pct%',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w700,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
                   ),
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  _HistoryPageState._formatWhen(it.createdAt),
-                  style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
-                ),
-                PopupMenuButton<String>(
-        padding: EdgeInsets.zero,
-        icon: const Icon(Icons.delete, size: 20),
-        onSelected: (v) {
-          if (v == 'delete') onDelete();
-        },
-        itemBuilder: (_) => const [
-          PopupMenuItem(value: 'delete', child: Text('Delete')),
-        ],
-      ),
-              ],
+              ),
             ),
-          ),
 
-          // Collapsible extra info
-          AnimatedCrossFade(
-            crossFadeState: expanded ? CrossFadeState.showFirst : CrossFadeState.showSecond,
-            duration: const Duration(milliseconds: 180),
-            firstChild: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 8, 0),
+            // Content section
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (it.geo != null) ...[
-                    _LocationPill(
-                      title: it.locName ??
-                          '${it.geo!.latitude.toStringAsFixed(5)}, ${it.geo!.longitude.toStringAsFixed(5)}',
-                      onTap: () => _openMaps(it.geo!.latitude, it.geo!.longitude),
-                    ),
-                    const SizedBox(height: 6),
-                  ],
+                  // Title row
                   Row(
                     children: [
-                      const Icon(Icons.info_outline, size: 16, color: Colors.black54),
-                      const SizedBox(width: 6),
-                      Text('Source: ${it.source}',
-                          style: TextStyle(color: Colors.grey.shade800, fontSize: 12.5)),
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: color.withOpacity(0.15),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          healthy ? Icons.eco : Icons.warning_amber_rounded,
+                          color: color,
+                          size: 18,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              it.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.black87,
+                              ),
+                            ),
+                            const SizedBox(height: 1),
+                            Builder(
+                              builder: (context) {
+                                return Text(
+                                  _HistoryPageState._formatWhen(it.createdAt, context),
+                                  style: TextStyle(
+                                    color: Colors.grey.shade600,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                      InkWell(
+                        onTap: onDelete,
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: Colors.red.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Icon(
+                            Icons.delete_outline,
+                            size: 18,
+                            color: Colors.red.shade700,
+                          ),
+                        ),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 2),
-                  if (pct != null)
-                    Row(
-                      children: [
-                        const Icon(Icons.analytics_outlined, size: 16, color: Colors.black54),
-                        const SizedBox(width: 6),
-                        Text('Confidence: $pct%',
-                            style: TextStyle(color: Colors.grey.shade800, fontSize: 12.5)),
-                      ],
+
+                  // Collapsible extra info
+                  AnimatedCrossFade(
+                    crossFadeState: expanded ? CrossFadeState.showFirst : CrossFadeState.showSecond,
+                    duration: const Duration(milliseconds: 200),
+                    firstChild: Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (it.geo != null) ...[
+                            _LocationPill(
+                              title: it.locName ??
+                                  '${it.geo!.latitude.toStringAsFixed(5)}, ${it.geo!.longitude.toStringAsFixed(5)}',
+                              onTap: () => _openMaps(it.geo!.latitude, it.geo!.longitude),
+                            ),
+                            const SizedBox(height: 6),
+                          ],
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade50,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Column(
+                              children: [
+                                Row(
+                                  children: [
+                                    Icon(Icons.info_outline, size: 14, color: Colors.grey.shade700),
+                                    const SizedBox(width: 6),
+                                    Builder(
+                                      builder: (context) {
+                                        final localizations = AppLocalizations.of(context);
+                                        return Text(
+                                          '${localizations?.source ?? 'Source'}: ${it.source}',
+                                          style: TextStyle(
+                                            color: Colors.grey.shade800,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                                if (pct != null) ...[
+                                  const SizedBox(height: 6),
+                                  Row(
+                                    children: [
+                                      Icon(Icons.analytics_outlined, size: 14, color: Colors.grey.shade700),
+                                      const SizedBox(width: 6),
+                                      Builder(
+                                        builder: (context) {
+                                          final localizations = AppLocalizations.of(context);
+                                          return Text(
+                                            '${localizations?.confidence ?? 'Confidence'}: $pct%',
+                                            style: TextStyle(
+                                              color: Colors.grey.shade800,
+                                              fontSize: 12,
+                                              fontWeight: FontWeight.w500,
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
+                    secondChild: const SizedBox.shrink(),
+                  ),
+
+                  // See more / See less button
+                  const SizedBox(height: 4),
+                  Center(
+                    child: TextButton.icon(
+                      onPressed: onToggle,
+                      icon: Icon(
+                        expanded ? Icons.expand_less : Icons.expand_more,
+                        size: 16,
+                      ),
+                      label: Builder(
+                        builder: (context) {
+                          final localizations = AppLocalizations.of(context);
+                          return Text(
+                            expanded ? (localizations?.showLess ?? 'Show less') : (localizations?.showMore ?? 'Show more'),
+                            style: const TextStyle(fontSize: 12),
+                          );
+                        },
+                      ),
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.grey.shade700,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
-            secondChild: const SizedBox(height: 2),
-          ),
-           const SizedBox(height:1),
-
-          // See more / See less
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              onPressed: onToggle,
-              style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8, vertical:1)),
-              child: Text(expanded ? 'See less' : 'See more'),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -805,30 +1605,45 @@ class _LocationPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.06),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.place, size: 18, color: Colors.black54),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                title,
-                style: TextStyle(color: Colors.grey.shade800),
-                overflow: TextOverflow.ellipsis,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: Colors.blue.shade50,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.blue.shade200, width: 1),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade100,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Icon(Icons.place, size: 14, color: Colors.blue.shade700),
               ),
-            ),
-            const SizedBox(width: 6),
-            const Icon(Icons.open_in_new, size: 16, color: Colors.black54),
-          ],
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  title,
+                  style: TextStyle(
+                    color: Colors.blue.shade900,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Icon(Icons.open_in_new, size: 14, color: Colors.blue.shade700),
+            ],
+          ),
         ),
       ),
     );
@@ -859,7 +1674,14 @@ class _ImagePreviewPage extends StatelessWidget {
     final color = label.toLowerCase().contains('healthy') ? Colors.green : Colors.redAccent;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan Detail')),
+      appBar: AppBar(
+        title: Builder(
+          builder: (context) {
+            final localizations = AppLocalizations.of(context);
+            return Text(localizations?.scanDetail ?? 'Scan Detail');
+          },
+        ),
+      ),
       body: ListView(
         children: [
           AspectRatio(
@@ -887,10 +1709,20 @@ class _ImagePreviewPage extends StatelessWidget {
                   label: Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w700)),
                 ),
                 const SizedBox(height: 8),
-                Text('Scanned at: ${_HistoryPageState._formatWhen(createdAt)}'),
+                Builder(
+                  builder: (context) {
+                    final localizations = AppLocalizations.of(context);
+                    return Text('${localizations?.scannedAt ?? 'Scanned at'}: ${_HistoryPageState._formatWhen(createdAt, context)}');
+                  },
+                ),
                 if (confidencePct != null) ...[
                   const SizedBox(height: 8),
-                  Text('Confidence: $confidencePct%'),
+                  Builder(
+                    builder: (context) {
+                      final localizations = AppLocalizations.of(context);
+                      return Text('${localizations?.confidence ?? 'Confidence'}: $confidencePct%');
+                    },
+                  ),
                 ],
                 if (geo != null) ...[
                   const SizedBox(height: 12),

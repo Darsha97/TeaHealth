@@ -1,8 +1,9 @@
 // history_service.dart
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
-// Optional compression utils below – see section 3
+import 'package:image/image.dart' as img;
 
 class HistoryItem {
   final String id;
@@ -52,7 +53,54 @@ class HistoryService {
   CollectionReference<Map<String, dynamic>> _scansCol(String uid) =>
       _db.collection('users').doc(uid).collection('scans');
 
-  /// Firestore-only: reads the file, (optionally compresses), writes Base64 to Firestore.
+  /// Compress image to stay under Firestore's 1MB limit per field
+  /// Target: max 800KB (base64 encoded) to leave headroom
+  Future<Uint8List> _compressImage(Uint8List originalBytes) async {
+    try {
+      final decoded = img.decodeImage(originalBytes);
+      if (decoded == null) return originalBytes;
+
+      // Target dimensions: max 1200px on longest side (maintains aspect ratio)
+      const maxDimension = 1200;
+      img.Image resized = decoded;
+      if (decoded.width > maxDimension || decoded.height > maxDimension) {
+        if (decoded.width >= decoded.height) {
+          resized = img.copyResize(decoded, width: maxDimension);
+        } else {
+          resized = img.copyResize(decoded, height: maxDimension);
+        }
+      }
+
+      // Encode with quality 75 (good balance between size and quality)
+      // Keep reducing quality until under ~600KB raw (which becomes ~800KB base64)
+      int quality = 75;
+      Uint8List compressed = Uint8List.fromList(img.encodeJpg(resized, quality: quality));
+      
+      // If still too large, reduce quality further
+      while (compressed.length > 600000 && quality > 30) {
+        quality -= 10;
+        compressed = Uint8List.fromList(img.encodeJpg(resized, quality: quality));
+      }
+
+      // If still too large, resize more aggressively
+      if (compressed.length > 600000) {
+        const aggressiveMax = 800;
+        if (decoded.width >= decoded.height) {
+          resized = img.copyResize(decoded, width: aggressiveMax);
+        } else {
+          resized = img.copyResize(decoded, height: aggressiveMax);
+        }
+        compressed = Uint8List.fromList(img.encodeJpg(resized, quality: 65));
+      }
+
+      return compressed;
+    } catch (e) {
+      // If compression fails, return original (will fail if too large, but at least we tried)
+      return originalBytes;
+    }
+  }
+
+  /// Firestore-only: reads the file, compresses it, writes Base64 to Firestore.
   Future<String> saveScan({
     required String uid,
     required File imageFile,
@@ -64,10 +112,15 @@ class HistoryService {
   }) async {
     final docRef = _scansCol(uid).doc();
 
-    // --- Read & (optionally) compress ---
-    final bytes = await imageFile.readAsBytes();
-    // If you add compression (section 3), replace the next line with: final bytes = await _compress(bytes);
-    final b64 = base64Encode(bytes);
+    // --- Read & compress ---
+    final originalBytes = await imageFile.readAsBytes();
+    final compressedBytes = await _compressImage(originalBytes);
+    final b64 = base64Encode(compressedBytes);
+
+    // Check if still too large (1MB base64 limit ≈ 750KB raw)
+    if (b64.length > 1000000) {
+      throw Exception('Image too large even after compression: ${(b64.length / 1024).toStringAsFixed(1)}KB');
+    }
 
     // --- Write Firestore doc ---
     await docRef.set({

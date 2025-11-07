@@ -528,15 +528,21 @@
 
 
 
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart'
     show FirebaseAuth, User, EmailAuthProvider, FirebaseAuthException;
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
 
 import '../../core/profile/user_profile_service.dart';
+import '../../core/localization/app_localizations.dart';
 import 'auth/login_page.dart';
+import 'home_page.dart';
+import 'history_page.dart';
+import 'map_history_page.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -568,14 +574,62 @@ class _ProfilePageState extends State<ProfilePage> {
       );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Logout failed: $e')));
+      final localizations = AppLocalizations.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('${localizations?.logoutFailed ?? 'Logout failed'}: $e')),
+      );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
-  // --- Pick image -> upload to Storage -> update Auth photoURL + Firestore ---
+  /// Compress image to stay under Firestore's 1MB limit per field
+  /// Target: max 600KB raw (becomes ~800KB base64)
+  Future<Uint8List> _compressImage(Uint8List originalBytes) async {
+    try {
+      final decoded = img.decodeImage(originalBytes);
+      if (decoded == null) return originalBytes;
+
+      // Target dimensions: max 800px on longest side for profile pics (smaller than scan images)
+      const maxDimension = 800;
+      img.Image resized = decoded;
+      if (decoded.width > maxDimension || decoded.height > maxDimension) {
+        if (decoded.width >= decoded.height) {
+          resized = img.copyResize(decoded, width: maxDimension);
+        } else {
+          resized = img.copyResize(decoded, height: maxDimension);
+        }
+      }
+
+      // Encode with quality 75, then reduce if needed
+      int quality = 75;
+      Uint8List compressed = Uint8List.fromList(img.encodeJpg(resized, quality: quality));
+      
+      // If still too large, reduce quality further
+      while (compressed.length > 500000 && quality > 40) {
+        quality -= 10;
+        compressed = Uint8List.fromList(img.encodeJpg(resized, quality: quality));
+      }
+
+      // If still too large, resize more aggressively
+      if (compressed.length > 500000) {
+        const aggressiveMax = 600;
+        if (decoded.width >= decoded.height) {
+          resized = img.copyResize(decoded, width: aggressiveMax);
+        } else {
+          resized = img.copyResize(decoded, height: aggressiveMax);
+        }
+        compressed = Uint8List.fromList(img.encodeJpg(resized, quality: 60));
+      }
+
+      return compressed;
+    } catch (e) {
+      debugPrint('Image compression error: $e');
+      return originalBytes;
+    }
+  }
+
+  // --- Pick image -> compress -> store as Base64 in Firestore ---
   Future<void> _editProfilePicture() async {
     if (_user == null) return;
 
@@ -590,33 +644,53 @@ class _ProfilePageState extends State<ProfilePage> {
     setState(() => _busy = true);
     try {
       final file = File(x.path);
-      final ref = FirebaseStorage.instance
-          .ref()
-          .child('users/${_user!.uid}/avatar.jpg');
+      if (!await file.exists()) {
+        throw Exception('Selected file does not exist');
+      }
 
-      final meta = SettableMetadata(contentType: 'image/jpeg');
-      await ref.putFile(file, meta);
+      // Read file bytes
+      final originalBytes = await file.readAsBytes();
+      
+      // Compress image
+      final compressedBytes = await _compressImage(originalBytes);
+      
+      // Convert to Base64
+      final base64String = base64Encode(compressedBytes);
+      
+      // Check size (Base64 is ~33% larger, so 800KB base64 = ~600KB raw)
+      if (base64String.length > 800000) {
+        throw Exception('Image too large even after compression. Please try a smaller image.');
+      }
 
-      final url = await ref.getDownloadURL();
+      // Store in Firestore (using photoB64 field)
+      await UserProfileService.instance.updateProfile(
+        extra: {'photoB64': base64String},
+      );
 
-      await _user!.updatePhotoURL(url);
-      await UserProfileService.instance.updateProfile(photoURL: url);
-
+      // Reload user data
       await _user!.reload();
       _user = FirebaseAuth.instance.currentUser;
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Profile photo updated')));
+      final localizations = AppLocalizations.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(localizations?.profilePhotoUpdated ?? 'Profile photo updated successfully'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 2),
+        ),
+      );
       setState(() {});
-    } on FirebaseException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Upload failed: ${e.message}')));
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+      final localizations = AppLocalizations.of(context);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${localizations?.uploadFailed ?? 'Upload failed'}: ${e.toString()}'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -626,6 +700,11 @@ class _ProfilePageState extends State<ProfilePage> {
   Future<void> _editProfile() async {
     if (_user == null) return;
 
+    // Get current values from user
+    await _user!.reload();
+    _user = FirebaseAuth.instance.currentUser;
+    if (_user == null) return;
+
     final nameCtrl = TextEditingController(text: _user!.displayName ?? '');
     final emailCtrl = TextEditingController(text: _user!.email ?? '');
     final formKey = GlobalKey<FormState>();
@@ -633,44 +712,69 @@ class _ProfilePageState extends State<ProfilePage> {
     await showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => AlertDialog(
-        title: const Text('Edit Profile'),
-        content: Form(
-          key: formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: nameCtrl,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(labelText: 'Name'),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Enter your name' : null,
-              ),
-              const SizedBox(height: 8),
-              TextFormField(
-                controller: emailCtrl,
-                decoration: const InputDecoration(labelText: 'Email'),
-                keyboardType: TextInputType.emailAddress,
-                validator: (v) {
-                  final t = v?.trim() ?? '';
-                  return (!t.contains('@') || t.startsWith('@') || t.endsWith('@'))
-                      ? 'Enter a valid email'
-                      : null;
-                },
-              ),
-            ],
+      builder: (dialogContext) {
+        final localizations = AppLocalizations.of(context);
+        return AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Text(
+            localizations?.editProfile ?? 'Edit Profile',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        content: SingleChildScrollView(
+          child: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: nameCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: InputDecoration(
+                    labelText: localizations?.name ?? 'Name',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  validator: (v) =>
+                      (v == null || v.trim().isEmpty) ? (localizations?.enterYourName ?? 'Enter your name') : null,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: emailCtrl,
+                  decoration: InputDecoration(
+                    labelText: localizations?.email ?? 'Email',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (v) {
+                    final t = v?.trim() ?? '';
+                    return (!t.contains('@') || t.startsWith('@') || t.endsWith('@'))
+                        ? (localizations?.enterValidEmail ?? 'Enter a valid email')
+                        : null;
+                  },
+                ),
+              ],
+            ),
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+            onPressed: () => Navigator.pop(dialogContext),
+            child: Text(localizations?.cancel ?? 'Cancel'),
           ),
           ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
             onPressed: () async {
               if (!formKey.currentState!.validate()) return;
-              Navigator.pop(context);
+              Navigator.pop(dialogContext);
 
               setState(() => _busy = true);
               try {
@@ -688,17 +792,19 @@ class _ProfilePageState extends State<ProfilePage> {
                   try {
                     await _user!.verifyBeforeUpdateEmail(newEmail);
                     if (!mounted) return;
+                    final loc = AppLocalizations.of(context);
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                         content: Text(
-                            'Verification sent to $newEmail. Confirm via your inbox to finish updating.')));
+                            '${loc?.verificationSentTo ?? 'Verification sent to'} $newEmail. ${loc?.confirmViaInbox ?? 'Confirm via your inbox to finish updating.'}')));
                   } on FirebaseAuthException catch (e) {
                     if (e.code == 'requires-recent-login') {
                       await _reauthThen(
                         () => _user!.verifyBeforeUpdateEmail(newEmail),
                       );
                     } else if (mounted) {
+                      final loc = AppLocalizations.of(context);
                       ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('Email update failed: ${e.code}')),
+                        SnackBar(content: Text('${loc?.emailUpdateFailed ?? 'Email update failed'}: ${e.code}')),
                       );
                     }
                   }
@@ -712,21 +818,24 @@ class _ProfilePageState extends State<ProfilePage> {
                     .updateProfile(email: refreshedEmail);
 
                 if (!mounted) return;
+                final loc = AppLocalizations.of(context);
                 ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Profile updated')));
+                    SnackBar(content: Text(loc?.profileUpdated ?? 'Profile updated')));
                 setState(() {});
               } catch (e) {
                 if (!mounted) return;
+                final loc = AppLocalizations.of(context);
                 ScaffoldMessenger.of(context)
-                    .showSnackBar(SnackBar(content: Text('Update failed: $e')));
+                    .showSnackBar(SnackBar(content: Text('${loc?.updateFailed ?? 'Update failed'}: $e')));
               } finally {
                 if (mounted) setState(() => _busy = false);
               }
             },
-            child: const Text('Save'),
+            child: Text(localizations?.save ?? 'Save'),
           ),
         ],
-      ),
+      );
+      },
     );
   }
 
@@ -745,10 +854,11 @@ class _ProfilePageState extends State<ProfilePage> {
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) {
+        final localizations = AppLocalizations.of(context);
         return StatefulBuilder(
           builder: (ctx, setStateDialog) {
             return AlertDialog(
-              title: const Text('Change Password'),
+              title: Text(localizations?.changePassword ?? 'Change Password'),
               content: Form(
                 key: formKey,
                 child: Column(
@@ -758,7 +868,7 @@ class _ProfilePageState extends State<ProfilePage> {
                       controller: currentCtrl,
                       obscureText: obscure1,
                       decoration: InputDecoration(
-                        labelText: 'Current password',
+                        labelText: localizations?.currentPassword ?? 'Current password',
                         suffixIcon: IconButton(
                           icon: Icon(
                               obscure1 ? Icons.visibility_off : Icons.visibility),
@@ -767,14 +877,14 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
                       validator: (v) =>
-                          (v == null || v.isEmpty) ? 'Enter current password' : null,
+                          (v == null || v.isEmpty) ? (localizations?.enterCurrentPassword ?? 'Enter current password') : null,
                     ),
                     const SizedBox(height: 8),
                     TextFormField(
                       controller: newCtrl,
                       obscureText: obscure2,
                       decoration: InputDecoration(
-                        labelText: 'New password (6+ chars)',
+                        labelText: localizations?.newPassword ?? 'New password (6+ chars)',
                         suffixIcon: IconButton(
                           icon: Icon(
                               obscure2 ? Icons.visibility_off : Icons.visibility),
@@ -783,14 +893,14 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
                       validator: (v) =>
-                          (v == null || v.length < 6) ? 'Min 6 characters' : null,
+                          (v == null || v.length < 6) ? (localizations?.min6Characters ?? 'Min 6 characters') : null,
                     ),
                     const SizedBox(height: 8),
                     TextFormField(
                       controller: confirmCtrl,
                       obscureText: obscure3,
                       decoration: InputDecoration(
-                        labelText: 'Confirm new password',
+                        labelText: localizations?.confirmNewPassword ?? 'Confirm new password',
                         suffixIcon: IconButton(
                           icon: Icon(
                               obscure3 ? Icons.visibility_off : Icons.visibility),
@@ -799,7 +909,7 @@ class _ProfilePageState extends State<ProfilePage> {
                         ),
                       ),
                       validator: (v) =>
-                          (v != newCtrl.text) ? 'Passwords do not match' : null,
+                          (v != newCtrl.text) ? (localizations?.passwordsDoNotMatch ?? 'Passwords do not match') : null,
                     ),
                   ],
                 ),
@@ -807,7 +917,7 @@ class _ProfilePageState extends State<ProfilePage> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('Cancel'),
+                  child: Text(localizations?.cancel ?? 'Cancel'),
                 ),
                 ElevatedButton(
                   onPressed: () async {
@@ -823,22 +933,25 @@ class _ProfilePageState extends State<ProfilePage> {
                       await _user!.reauthenticateWithCredential(cred);
                       await _user!.updatePassword(newCtrl.text);
                       if (!mounted) return;
+                      final loc = AppLocalizations.of(context);
                       ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Password changed')));
+                          SnackBar(content: Text(loc?.passwordChanged ?? 'Password changed')));
                     } on FirebaseAuthException catch (e) {
                       if (!mounted) return;
+                      final loc = AppLocalizations.of(context);
                       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                           content:
-                              Text('Password change failed: ${e.code}')));
+                              Text('${loc?.passwordChangeFailed ?? 'Password change failed'}: ${e.code}')));
                     } catch (e) {
                       if (!mounted) return;
+                      final loc = AppLocalizations.of(context);
                       ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(content: Text('Password change failed: $e')));
+                          SnackBar(content: Text('${loc?.passwordChangeFailed ?? 'Password change failed'}: $e')));
                     } finally {
                       if (mounted) setState(() => _busy = false);
                     }
                   },
-                  child: const Text('Update'),
+                  child: Text(localizations?.update ?? 'Update'),
                 ),
               ],
             );
@@ -859,15 +972,16 @@ class _ProfilePageState extends State<ProfilePage> {
       context: context,
       barrierDismissible: false,
       builder: (dialogContext) {
+        final localizations = AppLocalizations.of(context);
         return StatefulBuilder(
           builder: (ctx, setStateDialog) {
             return AlertDialog(
-              title: const Text('Re-authentication required'),
+              title: Text(localizations?.reauthenticationRequired ?? 'Re-authentication required'),
               content: TextField(
                 controller: pwdCtrl,
                 obscureText: obscure,
                 decoration: InputDecoration(
-                  labelText: 'Current password',
+                  labelText: localizations?.currentPassword ?? 'Current password',
                   suffixIcon: IconButton(
                     icon: Icon(obscure ? Icons.visibility_off : Icons.visibility),
                     onPressed: () => setStateDialog(() => obscure = !obscure),
@@ -877,11 +991,11 @@ class _ProfilePageState extends State<ProfilePage> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(dialogContext, false),
-                  child: const Text('Cancel'),
+                  child: Text(localizations?.cancel ?? 'Cancel'),
                 ),
                 ElevatedButton(
                   onPressed: () => Navigator.pop(dialogContext, true),
-                  child: const Text('Continue'),
+                  child: Text(localizations?.continueText ?? 'Continue'),
                 ),
               ],
             );
@@ -902,13 +1016,15 @@ class _ProfilePageState extends State<ProfilePage> {
       await _user!.reload();
       _user = FirebaseAuth.instance.currentUser;
       if (!mounted) return;
+      final localizations = AppLocalizations.of(context);
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Updated successfully')));
+          SnackBar(content: Text(localizations?.updatedSuccessfully ?? 'Updated successfully')));
       setState(() {});
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
+      final localizations = AppLocalizations.of(context);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Re-auth failed: ${e.code}')));
+          .showSnackBar(SnackBar(content: Text('${localizations?.reauthFailed ?? 'Re-auth failed'}: ${e.code}')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -926,7 +1042,9 @@ class _ProfilePageState extends State<ProfilePage> {
             (data['displayName'] as String?) ?? authUser?.displayName ?? 'TeaHealth User';
         final email =
             (data['email'] as String?) ?? authUser?.email ?? 'unknown@example.com';
-        final photo = (data['photoURL'] as String?) ?? authUser?.photoURL;
+        // Try photoB64 first (Firestore), then photoURL (Storage/Auth), then fallback
+        final photoB64 = data['photoB64'] as String?;
+        final photoURL = (data['photoURL'] as String?) ?? authUser?.photoURL;
 
         return Scaffold(
           extendBodyBehindAppBar: true,
@@ -934,7 +1052,27 @@ class _ProfilePageState extends State<ProfilePage> {
             backgroundColor: Colors.transparent,
             elevation: 0,
             centerTitle: true,
-            title: const Text('Profile', style: TextStyle(color: Colors.white)),
+            title: Builder(
+              builder: (context) {
+                final localizations = AppLocalizations.of(context);
+                return Text(
+                  localizations?.profile ?? 'Profile',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 22,
+                    letterSpacing: 0.5,
+                    shadows: [
+                      Shadow(
+                        color: Colors.black26,
+                        offset: Offset(0, 1),
+                        blurRadius: 2,
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
             iconTheme: const IconThemeData(color: Colors.white),
           ),
           body: Stack(
@@ -965,63 +1103,192 @@ class _ProfilePageState extends State<ProfilePage> {
                     children: [
                       // Profile card
                       Card(
-                        elevation: 10,
+                        elevation: 12,
+                        shadowColor: Colors.black.withOpacity(0.2),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(24)),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
-                          child: Column(
-                            children: [
-                              Stack(
-                                alignment: Alignment.bottomRight,
-                                children: [
-                                  CircleAvatar(
-                                    radius: 52,
-                                    backgroundImage: (photo != null && photo.isNotEmpty)
-                                        ? NetworkImage(photo)
-                                        : const AssetImage('assets/images/profile.png')
-                                            as ImageProvider,
-                                  ),
-                                  InkWell(
-                                    onTap: _busy ? null : _editProfilePicture,
-                                    child: Container(
-                                      margin: const EdgeInsets.only(right: 2, bottom: 2),
-                                      decoration: const BoxDecoration(
-                                        color: Colors.green,
+                            borderRadius: BorderRadius.circular(28)),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(28),
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                Colors.white,
+                                Colors.grey.shade50,
+                              ],
+                            ),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
+                            child: Column(
+                              children: [
+                                Stack(
+                                  alignment: Alignment.bottomRight,
+                                  children: [
+                                    Container(
+                                      decoration: BoxDecoration(
                                         shape: BoxShape.circle,
+                                        border: Border.all(
+                                          color: Colors.green.shade300,
+                                          width: 4,
+                                        ),
+                                        boxShadow: [
+                                          BoxShadow(
+                                            color: Colors.green.withOpacity(0.3),
+                                            blurRadius: 20,
+                                            spreadRadius: 4,
+                                          ),
+                                        ],
                                       ),
-                                      padding: const EdgeInsets.all(6),
-                                      child: Icon(
-                                        _busy ? Icons.hourglass_top : Icons.edit,
-                                        size: 16,
-                                        color: Colors.white,
+                                      child: CircleAvatar(
+                                        radius: 56,
+                                        backgroundColor: Colors.grey.shade200,
+                                        backgroundImage: photoB64 != null && photoB64.isNotEmpty
+                                            ? MemoryImage(base64Decode(photoB64))
+                                            : (photoURL != null && photoURL.isNotEmpty)
+                                                ? NetworkImage(photoURL)
+                                                : const AssetImage('assets/images/profile.png')
+                                                    as ImageProvider,
+                                        onBackgroundImageError: (_, __) {
+                                          // Handle image load error
+                                        },
                                       ),
                                     ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 12),
-                              Text(displayName,
+                                    InkWell(
+                                      onTap: _busy ? null : _editProfilePicture,
+                                      borderRadius: BorderRadius.circular(20),
+                                      child: Container(
+                                        margin: const EdgeInsets.only(right: 4, bottom: 4),
+                                        decoration: BoxDecoration(
+                                          gradient: const LinearGradient(
+                                            colors: [Color(0xFF2ECC71), Color(0xFF27AE60)],
+                                          ),
+                                          shape: BoxShape.circle,
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.green.withOpacity(0.4),
+                                              blurRadius: 8,
+                                              spreadRadius: 2,
+                                            ),
+                                          ],
+                                        ),
+                                        padding: const EdgeInsets.all(8),
+                                        child: Icon(
+                                          _busy ? Icons.hourglass_top : Icons.camera_alt,
+                                          size: 18,
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 20),
+                                Text(
+                                  displayName,
                                   style: const TextStyle(
-                                      fontSize: 22, fontWeight: FontWeight.bold)),
-                              const SizedBox(height: 4),
-                              Text(email,
-                                  style: TextStyle(color: Colors.grey.shade600)),
-                              const SizedBox(height: 12),
-                              const Wrap(
-                                alignment: WrapAlignment.center,
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  Chip(
-                                      avatar: Icon(Icons.verified_user, size: 18),
-                                      label: Text('TeaHealth user')),
-                                  Chip(
-                                      avatar: Icon(Icons.insights, size: 18),
-                                      label: Text('Disease & deficiency checks')),
-                                ],
-                              ),
-                            ],
+                                    fontSize: 26,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.black87,
+                                    letterSpacing: 0.3,
+                                  ),
+                                ),
+                                const SizedBox(height: 6),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(Icons.email_outlined, size: 16, color: Colors.grey.shade600),
+                                    const SizedBox(width: 6),
+                                    Flexible(
+                                      child: Text(
+                                        email,
+                                        style: TextStyle(
+                                          color: Colors.grey.shade600,
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                        textAlign: TextAlign.center,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 20),
+                                Wrap(
+                                  alignment: WrapAlignment.center,
+                                  spacing: 10,
+                                  runSpacing: 10,
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          colors: [
+                                            Colors.green.shade50,
+                                            Colors.green.shade100.withOpacity(0.5),
+                                          ],
+                                        ),
+                                        borderRadius: BorderRadius.circular(20),
+                                        border: Border.all(color: Colors.green.shade200, width: 1.5),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.verified_user, size: 18, color: Colors.green.shade700),
+                                          const SizedBox(width: 6),
+                                          Builder(
+                                            builder: (context) {
+                                              final localizations = AppLocalizations.of(context);
+                                              return Text(
+                                                localizations?.teaHealthUser ?? 'TeaHealth user',
+                                                style: TextStyle(
+                                                  color: Colors.green.shade900,
+                                                  fontWeight: FontWeight.w700,
+                                                  fontSize: 13,
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        gradient: LinearGradient(
+                                          colors: [
+                                            Colors.blue.shade50,
+                                            Colors.blue.shade100.withOpacity(0.5),
+                                          ],
+                                        ),
+                                        borderRadius: BorderRadius.circular(20),
+                                        border: Border.all(color: Colors.blue.shade200, width: 1.5),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.insights, size: 18, color: Colors.blue.shade700),
+                                          const SizedBox(width: 6),
+                                          Builder(
+                                            builder: (context) {
+                                              final localizations = AppLocalizations.of(context);
+                                              return Text(
+                                                localizations?.healthChecks ?? 'Health Checks',
+                                                style: TextStyle(
+                                                  color: Colors.blue.shade900,
+                                                  fontWeight: FontWeight.w700,
+                                                  fontSize: 13,
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
@@ -1030,55 +1297,99 @@ class _ProfilePageState extends State<ProfilePage> {
 
                       // Settings/actions
                       Card(
+                        elevation: 8,
+                        shadowColor: Colors.black.withOpacity(0.15),
                         shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(20)),
-                        child: Column(
-                          children: [
-                            ListTile(
-                              leading: const Icon(Icons.edit_outlined,
-                                  color: Colors.green),
-                              title: const Text('Edit Profile'),
-                              subtitle: const Text('Update your name and email'),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: _busy ? null : _editProfile,
+                            borderRadius: BorderRadius.circular(24)),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(24),
+                            gradient: LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                Colors.white,
+                                Colors.grey.shade50,
+                              ],
                             ),
-                            const Divider(height: 1),
-                            ListTile(
-                              leading: const Icon(Icons.lock_reset,
-                                  color: Colors.green),
-                              title: const Text('Change Password'),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: _busy ? null : _changePassword,
-                            ),
-                            const Divider(height: 1),
-                            ListTile(
-                              leading: const Icon(Icons.help_outline,
-                                  color: Colors.green),
-                              title: const Text('Help & Support'),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () {/* TODO: your help screen */},
-                            ),
-                          ],
+                          ),
+                          child: Column(
+                            children: [
+                              Builder(
+                                builder: (context) {
+                                  final localizations = AppLocalizations.of(context);
+                                  return Column(
+                                    children: [
+                                      _SettingsTile(
+                                        icon: Icons.person_outline,
+                                        iconColor: Colors.blue,
+                                        title: localizations?.editProfile ?? 'Edit Profile',
+                                        subtitle: localizations?.updateNameAndEmail ?? 'Update your name and email',
+                                        onTap: _busy ? null : _editProfile,
+                                      ),
+                                      const Divider(height: 1, indent: 70, endIndent: 16),
+                                      _SettingsTile(
+                                        icon: Icons.lock_outline,
+                                        iconColor: Colors.orange,
+                                        title: localizations?.changePassword ?? 'Change Password',
+                                        subtitle: localizations?.updateAccountPassword ?? 'Update your account password',
+                                        onTap: _busy ? null : _changePassword,
+                                      ),
+                                    ],
+                                  );
+                                },
+                              ),
+                            ],
+                          ),
                         ),
                       ),
 
                       const SizedBox(height: 16),
 
                       // Logout
-                      SizedBox(
+                      Container(
                         width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton.icon(
-                          icon: const Icon(Icons.logout),
-                          label: const Text('Logout'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.redAccent,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14)),
-                            elevation: 6,
+                        height: 56,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              Colors.red.shade400,
+                              Colors.red.shade600,
+                            ],
                           ),
-                          onPressed: _busy ? null : _logout,
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.red.withOpacity(0.3),
+                              blurRadius: 12,
+                              offset: const Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: Builder(
+                          builder: (context) {
+                            final localizations = AppLocalizations.of(context);
+                            return ElevatedButton.icon(
+                              icon: const Icon(Icons.logout, size: 20),
+                              label: Text(
+                                localizations?.logout ?? 'Logout',
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.transparent,
+                                shadowColor: Colors.transparent,
+                                foregroundColor: Colors.white,
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(16)),
+                                elevation: 0,
+                              ),
+                              onPressed: _busy ? null : _logout,
+                            );
+                          },
                         ),
                       ),
                     ],
@@ -1096,8 +1407,137 @@ class _ProfilePageState extends State<ProfilePage> {
                 ),
             ],
           ),
+          bottomNavigationBar: Builder(
+            builder: (context) {
+              final localizations = AppLocalizations.of(context);
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: BottomNavigationBar(
+                    backgroundColor: Colors.white,
+                    elevation: 12,
+                    selectedItemColor: Colors.green,
+                    unselectedItemColor: Colors.black54,
+                    type: BottomNavigationBarType.fixed,
+                    currentIndex: 3,
+                    items: [
+                      BottomNavigationBarItem(icon: const Icon(Icons.home), label: localizations?.home ?? 'Home'),
+                      BottomNavigationBarItem(icon: const Icon(Icons.history), label: localizations?.history ?? 'History'),
+                      BottomNavigationBarItem(icon: const Icon(Icons.map), label: localizations?.map ?? 'Map'),
+                      BottomNavigationBarItem(icon: const Icon(Icons.person), label: localizations?.profile ?? 'Profile'),
+                    ],
+                onTap: (index) {
+                  final user = FirebaseAuth.instance.currentUser;
+                  if (index == 0) {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(builder: (_) => const HomePage()),
+                    );
+                  } else if (index == 1) {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(builder: (_) => const HistoryPage()),
+                    );
+                  } else if (index == 2) {
+                    if (user != null) {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (_) => MapHistoryPage(uid: user.uid)),
+                      );
+                    } else {
+                      final localizations = AppLocalizations.of(context);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(localizations?.pleaseLoginToViewMap ?? 'Please log in to view map')),
+                      );
+                    }
+                  }
+                },
+                  ),
+                ),
+              );
+            },
+          ),
         );
       },
+    );
+  }
+}
+
+// Settings tile widget
+class _SettingsTile extends StatelessWidget {
+  const _SettingsTile({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(24),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: iconColor.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: iconColor.withOpacity(0.3),
+                    width: 1.5,
+                  ),
+                ),
+                child: Icon(icon, color: iconColor, size: 24),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.black87,
+                        letterSpacing: 0.2,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.grey.shade600,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(
+                Icons.chevron_right,
+                color: Colors.grey.shade400,
+                size: 24,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

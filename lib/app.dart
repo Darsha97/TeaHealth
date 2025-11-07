@@ -1,17 +1,23 @@
 // lib/app.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 import 'presentation/pages/splash_screen.dart';
 import 'presentation/pages/auth/login_page.dart';
 import 'presentation/pages/home_page.dart';
+import 'core/localization/app_localizations.dart';
+import 'core/localization/locale_provider.dart';
 
-class TeaScanAppp extends StatelessWidget {
+class TeaScanAppp extends ConsumerWidget {
   const TeaScanAppp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final locale = ref.watch(localeProvider);
+    
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'TeaScan',
@@ -19,6 +25,18 @@ class TeaScanAppp extends StatelessWidget {
         colorSchemeSeed: Colors.green,
         useMaterial3: true,
       ),
+      locale: locale,
+      localizationsDelegates: const [
+        AppLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('en', ''), // English
+        Locale('ta', ''), // Tamil
+        Locale('si', ''), // Sinhala
+      ],
       home: const _SplashRouter(), // 👈 always start on a splash-aware router
     );
   }

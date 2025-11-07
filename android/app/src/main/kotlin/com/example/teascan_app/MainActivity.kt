@@ -2,6 +2,8 @@ package com.example.teascan_app
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -39,10 +41,81 @@ class MainActivity : FlutterActivity() {
                     return@setMethodCallHandler
                 }
 
-                val bitmap = BitmapFactory.decodeFile(imagePath)
+                // Decode bitmap with options to handle large images
+                val options = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = false
+                    inSampleSize = 1
+                }
+                var bitmap = BitmapFactory.decodeFile(imagePath, options)
                 if (bitmap == null) {
                     result.error("BITMAP_ERROR", "Failed to decode bitmap from: $imagePath", null)
                     return@setMethodCallHandler
+                }
+                
+                // Handle EXIF orientation for camera photos - improved handling
+                try {
+                    val exif = ExifInterface(imagePath)
+                    val orientation = exif.getAttributeInt(
+                        ExifInterface.TAG_ORIENTATION,
+                        ExifInterface.ORIENTATION_NORMAL
+                    )
+                    
+                    Log.d("Pytorch", "📐 EXIF orientation: $orientation")
+                    
+                    if (orientation != ExifInterface.ORIENTATION_NORMAL) {
+                        val matrix = Matrix()
+                        when (orientation) {
+                            ExifInterface.ORIENTATION_ROTATE_90 -> {
+                                matrix.postRotate(90f)
+                                Log.d("Pytorch", "🔄 Rotating 90°")
+                            }
+                            ExifInterface.ORIENTATION_ROTATE_180 -> {
+                                matrix.postRotate(180f)
+                                Log.d("Pytorch", "🔄 Rotating 180°")
+                            }
+                            ExifInterface.ORIENTATION_ROTATE_270 -> {
+                                matrix.postRotate(270f)
+                                Log.d("Pytorch", "🔄 Rotating 270°")
+                            }
+                            ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> {
+                                matrix.postScale(-1f, 1f)
+                                Log.d("Pytorch", "🔄 Flipping horizontally")
+                            }
+                            ExifInterface.ORIENTATION_FLIP_VERTICAL -> {
+                                matrix.postScale(1f, -1f)
+                                Log.d("Pytorch", "🔄 Flipping vertically")
+                            }
+                            ExifInterface.ORIENTATION_TRANSPOSE -> {
+                                matrix.postRotate(90f)
+                                matrix.postScale(-1f, 1f)
+                                Log.d("Pytorch", "🔄 Transpose (90° + flip)")
+                            }
+                            ExifInterface.ORIENTATION_TRANSVERSE -> {
+                                matrix.postRotate(270f)
+                                matrix.postScale(-1f, 1f)
+                                Log.d("Pytorch", "🔄 Transverse (270° + flip)")
+                            }
+                        }
+                        
+                        try {
+                            val rotatedBitmap = Bitmap.createBitmap(
+                                bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+                            )
+                            if (rotatedBitmap != bitmap) {
+                                bitmap.recycle()
+                                bitmap = rotatedBitmap
+                                Log.d("Pytorch", "✅ EXIF rotation applied. New size: ${bitmap.width}x${bitmap.height}")
+                            }
+                        } catch (e: Exception) {
+                            Log.e("Pytorch", "❌ Failed to apply rotation: ${e.message}")
+                            // Continue with original bitmap if rotation fails
+                        }
+                    } else {
+                        Log.d("Pytorch", "✓ No EXIF rotation needed")
+                    }
+                } catch (e: Exception) {
+                    Log.w("Pytorch", "⚠️ Could not read EXIF data: ${e.message}")
+                    // Continue with original bitmap if EXIF read fails
                 }
 
                 if (module == null) {
@@ -51,8 +124,13 @@ class MainActivity : FlutterActivity() {
                 }
 
                 try {
-                    Log.d("Pytorch", "🔄 Resizing bitmap...")
+                    Log.d("Pytorch", "🔄 Resizing bitmap... Original size: ${bitmap.width}x${bitmap.height}")
                     val resized = Bitmap.createScaledBitmap(bitmap, 300, 300, true)
+                    
+                    // Recycle original bitmap if we created a resized version
+                    if (resized != bitmap) {
+                        bitmap.recycle()
+                    }
 
                     Log.d("Pytorch", "🔄 Converting to tensor...")
                     val inputTensor = TensorImageUtils.bitmapToFloat32Tensor(
@@ -60,6 +138,9 @@ class MainActivity : FlutterActivity() {
                         TensorImageUtils.TORCHVISION_NORM_MEAN_RGB,
                         TensorImageUtils.TORCHVISION_NORM_STD_RGB
                     )
+                    
+                    // Recycle resized bitmap after creating tensor
+                    resized.recycle()
 
                     Log.d("Pytorch", "🤖 Running inference...")
                     val outputs = module!!.forward(IValue.from(inputTensor)).toTuple()
